@@ -4,8 +4,9 @@ The proposal says what to do. This says how to put it together, in what order,
 and what the working code already changed about the plan.
 
 Everything below refers to the package in `zulf/` and the tests in `tests/`.
-Twenty tests pass. They encode every physics claim the proposal makes, so if a
-later change breaks one, you find out in 0.3 s instead of in a referee report.
+A hundred and four tests pass, in 1 s. Twenty of them encode every physics claim
+the proposal makes, so if a later change breaks one, you find out immediately
+instead of in a referee report. The rest are layer 5.
 
 ---
 
@@ -22,7 +23,7 @@ physics without touching the network.
 | 2 | **Line list**: $(\nu_k, A_k)$ with complex $A_k$ | `signal.py` |
 | 3 | Detector response and relaxation, applied on the line list | `detector.py` |
 | 4 | Line list to spectrum to peak list | `fast_spectrum.py`, `spectrum.py` |
-| 5 | Priors, parameterization, symmetry gauge | *to write* |
+| 5 | Priors, parameterization, symmetry gauge | `parameters.py`, `priors.py` |
 | 6 | NPE training, calibration, refinement, reweighting | *to write* |
 
 **The one decision that everything else hangs off**: the forward model returns a
@@ -229,7 +230,7 @@ requests. Not the whole proposal.
 
 ```bash
 pip install numpy scipy pytest
-python -m pytest tests/ -q          # 20 passed
+python -m pytest tests/ -q          # 104 passed
 ```
 
 Next dependencies, when you reach layer 6: `sbi`, `torch`, and either

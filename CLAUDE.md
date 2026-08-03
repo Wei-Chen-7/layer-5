@@ -4,8 +4,8 @@ Simulation-based inference of J-couplings from zero- to ultralow-field (ZULF)
 NMR spectra. Physics research code that ends in a paper, so correctness beats
 speed and beats convenience.
 
-Run `python -m pytest tests/ -q` before and after every change. 20 tests pass
-today.
+Run `python -m pytest tests/ -q` before and after every change. 104 tests pass
+today: 20 in `tests/test_physics.py` and 84 in `tests/test_parameters.py`.
 
 ---
 
@@ -41,6 +41,17 @@ at all. Never assume non-negative weights.
 **A J-spectrum needs at least two distinct gamma.** If every spin has the same
 gamma, Mz commutes with the coupling Hamiltonian and there is no spectrum.
 
+**The gauge is a convention, and the convention is written down.** The
+sampled couplings are orbits of the equivalence group, not pairs. Flipping
+the sign of every coupling leaves the spectrum unchanged, so the orbit
+carrying the largest-magnitude coupling is taken positive, ties going to the
+lowest orbit index. Same-species nuclei that are not magnetically equivalent
+are ordered by their sorted coupling vectors. `parameters.report_gauge()`
+states all three in the words the paper needs; change the code and that
+string changes with it. A prior written on the unquotiented space has to be
+folded before it is compared with a posterior reported on the quotient, which
+is what `priors.SignGaugedPrior` is for.
+
 ---
 
 ## Architecture
@@ -57,7 +68,7 @@ reproduce what the real instrument did to the real data.
 | 2 Line list | `signal.py` | done |
 | 3 Detector, relaxation | `detector.py` | done |
 | 4 Spectrum and peak list | `fast_spectrum.py`, `spectrum.py` | done |
-| 5 Priors, parameterization, gauge | `parameters.py`, `priors.py` | to write |
+| 5 Priors, parameterization, gauge | `parameters.py`, `priors.py` | done |
 | 6 NPE, calibration, reweighting | `inference/` | to write |
 
 Each layer talks only to the one below it.
