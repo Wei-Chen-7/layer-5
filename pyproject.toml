@@ -1,0 +1,13 @@
+[project]
+name = "zulf-sbi"
+version = "0.1.0"
+description = "Simulation-based inference of J-couplings from zero-field NMR spectra"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[project.optional-dependencies]
+inference = ["sbi", "torch", "ultranest"]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
