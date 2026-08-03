@@ -4,7 +4,7 @@ The proposal says what to do. This says how to put it together, in what order,
 and what the working code already changed about the plan.
 
 Everything below refers to the package in `zulf/` and the tests in `tests/`.
-A hundred and four tests pass, in 1 s. Twenty of them encode every physics claim
+A hundred and twenty-seven tests pass, in 1 s. Twenty of them encode every physics claim
 the proposal makes, so if a later change breaks one, you find out immediately
 instead of in a referee report. The rest are layer 5.
 
@@ -230,7 +230,7 @@ requests. Not the whole proposal.
 
 ```bash
 pip install numpy scipy pytest
-python -m pytest tests/ -q          # 104 passed
+python -m pytest tests/ -q          # 127 passed
 ```
 
 Next dependencies, when you reach layer 6: `sbi`, `torch`, and either

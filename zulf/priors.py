@@ -33,6 +33,29 @@ matters whenever the coupling prior has appreciable mass on both sides of
 zero, which is exactly the case for the wide fallbacks.  Comparing an
 unfolded prior with a folded posterior is the sort of mistake that shows up
 as a spurious factor of two in a KL and nowhere else.
+
+WHAT IS NOT FOLDED, AND WHEN THAT MATTERS
+-----------------------------------------
+The *labelling* gauge is not folded into the prior, only the sign gauge is.
+For acetonitrile the two carbons may be exchanged without changing the
+spectrum, and `parameters.canonical_theta` shows that this exchanges the
+C0-H and C1-H orbits, so the likelihood is invariant under swapping two
+components of theta while the prior is not.
+
+This is benign exactly when the coupling prior distinguishes the two nuclei,
+because then the prior is what breaks the degeneracy and it is entitled to:
+the methyl and nitrile carbons of acetonitrile have one-bond couplings near
+136 Hz and -10 Hz, so any usable prediction separates them by a hundred prior
+widths and the second mode has no mass.  It is NOT benign if both orbits are
+given the same wide fallback, because then the posterior is genuinely
+bimodal under the swap, and a prior that is symmetric under it will report
+two modes that are one result.  In that case canonicalize the posterior
+samples with `parameters.canonical_theta` before summarizing them, and read
+the movement diagnostic on the canonicalized samples.  Folding the prior over
+the labelling group as well would remove the need for that, and is the
+obvious next thing to build if the acetonitrile fit is ever run without
+predicted couplings.  Formic acid and methanol are unaffected: neither has
+any labelling freedom left once the orbits are taken.
 """
 
 import numpy as np
@@ -210,6 +233,16 @@ class Prior:
             out = out + comp.log_prob(theta[:, k])
         return float(out[0]) if single else out
 
+    def log_scale_names(self):
+        """The parameters whose prior is flat in the log, not in the value.
+
+        Hand these to `movement(..., log=...)`.  A standard-deviation ratio
+        computed in linear units on a five-decade log-uniform prior is a
+        statement about the top decade and almost nothing else.
+        """
+        return [n for n, c in zip(self.names, self.components)
+                if isinstance(c, LogUniform)]
+
     def as_dict(self, theta):
         """One parameter vector as {name: value}, for printing and for tests."""
         theta = np.asarray(theta, dtype=float).ravel()
@@ -234,8 +267,15 @@ class SignGaugedPrior(Prior):
 
     def __init__(self, components, n_couplings):
         super().__init__(components)
-        if not 0 <= n_couplings <= self.ndim:
-            raise ValueError("n_couplings out of range")
+        if not 1 <= n_couplings <= self.ndim:
+            # with an empty coupling block the flip is the identity, so the
+            # fold would add a density to itself and integrate to 2.  There is
+            # nothing to gauge, so the right object is a plain Prior.
+            raise ValueError(
+                f"n_couplings must be between 1 and {self.ndim}, got "
+                f"{n_couplings}; a prior with no couplings has no sign gauge, "
+                "so use Prior instead"
+            )
         self.n_couplings = int(n_couplings)
 
     def _flip(self, theta):
@@ -477,9 +517,13 @@ class Movement:
 def _kl_gaussian(post, prior):
     """KL(posterior || prior) with both replaced by their moments.
 
-    Cheap, stable, and wrong in exactly one interesting way: it cannot see
-    multimodality, which is what an unfixed gauge produces.  Use it as the
-    default and the nearest-neighbour estimator as the check.
+    Cheap and stable, and wrong in two ways worth knowing about.  It cannot
+    see multimodality, which is what an unfixed gauge produces.  And it is a
+    poor approximation for the log-scale nuisances: measured on a log-uniform
+    b_mag prior against a posterior pinned to one decade, it returns 7.14 nats
+    where the analytic answer is 4.02.  For those parameters pass
+    ``log=`` to `movement`, which puts them in the basis their prior is flat
+    in, or use the nearest-neighbour estimator, which needs no basis at all.
     """
     mq, sq = post.mean(), post.std(ddof=1)
     mp, sp = prior.mean(), prior.std(ddof=1)
@@ -522,15 +566,57 @@ def _kl_knn(post, prior):
     hi = np.clip(idx, 0, m - 1)
     s = np.minimum(np.abs(q - p[lo]), np.abs(q - p[hi]))
 
-    scale = max(np.ptp(q), np.ptp(p), 1.0)
-    floor = 1e-12 * scale
+    # The floor exists only to keep exact duplicates out of the logarithm, so
+    # it has to be RELATIVE to the spread of the data.  An absolute floor
+    # silently destroys the estimate for a parameter measured in small units:
+    # b_mag lives in 1e-13 to 1e-8 T, its nearest-neighbour spacings are around
+    # 1e-16 T, and a 1e-12 floor clipped every one of them to the same value,
+    # turning a genuine 4.0 nat move into a reported 5e-5.
+    scale = max(np.ptp(q), np.ptp(p))
+    if scale <= 0:
+        return np.nan
+    floor = 1e-15 * scale
     r = np.maximum(r, floor)
     s = np.maximum(s, floor)
     return float(np.mean(np.log(s / r)) + np.log(m / (n - 1.0)))
 
 
+def _as_samples(x, what):
+    """(n, d) sample array.  A bare 1-D array is n draws of one parameter."""
+    x = np.asarray(x, dtype=float)
+    if x.ndim == 0:
+        raise ValueError(f"{what} must be an array of samples, not a scalar")
+    if x.ndim == 1:
+        return x.reshape(-1, 1)
+    # leading dimensions are pooled, so (chains, draws, d) works as it reads
+    return x.reshape(-1, x.shape[-1])
+
+
+def _log_columns(d, names, log):
+    """Resolve the `log` argument to a boolean mask over the d parameters."""
+    mask = np.zeros(d, dtype=bool)
+    if log is None:
+        return mask
+    if isinstance(log, str):
+        raise ValueError(
+            "log must be a sequence of parameter names or indices, or None; "
+            "pass log=prior.log_scale_names() to take them from a prior"
+        )
+    for item in log:
+        if isinstance(item, (int, np.integer)):
+            k = int(item)
+            if not 0 <= k < d:
+                raise ValueError(f"log: parameter {k} does not exist")
+        else:
+            if item not in names:
+                raise ValueError(f"log: no parameter named {item!r}")
+            k = names.index(item)
+        mask[k] = True
+    return mask
+
+
 def movement(prior_samples, posterior_samples, names=None, method="gaussian",
-             threshold=0.9):
+             threshold=0.9, log=None):
     """How far the data moved each parameter away from its prior.
 
     This is the diagnostic that makes a flat direction visible instead of
@@ -546,12 +632,24 @@ def movement(prior_samples, posterior_samples, names=None, method="gaussian",
     threshold : sd ratios above this are flagged as flat directions.  0.9 is
         the project convention: a parameter whose posterior is more than 90%
         as wide as its prior has not been measured.
+    log : names or indices of parameters to assess in log units.  The KL is
+        invariant under reparameterization but its estimators are not, and
+        neither is the standard-deviation ratio, which is a statement about a
+        particular basis and nothing more.  For the log-scale nuisances --
+        b_mag, the rates, noise, scale, f_cut, gain -- the basis their prior
+        is flat in is the log, and `Prior.log_scale_names()` returns exactly
+        those.  The flat FLAG is robust to the choice, since a parameter that
+        was not measured has a ratio near one in any basis; it is the
+        magnitudes that move.
+
+    Notes
+    -----
+    All of this is per-marginal.  A direction that is only constrained jointly
+    with another will show as flat here and is not, which is the one failure
+    this diagnostic cannot see on its own.
     """
-    # a bare 1-D array is n draws of one parameter, not one draw of n of them
-    prior_samples = np.asarray(prior_samples, dtype=float).reshape(
-        -1, 1 if np.ndim(prior_samples) == 1 else np.shape(prior_samples)[-1])
-    posterior_samples = np.asarray(posterior_samples, dtype=float).reshape(
-        -1, 1 if np.ndim(posterior_samples) == 1 else np.shape(posterior_samples)[-1])
+    prior_samples = _as_samples(prior_samples, "prior_samples")
+    posterior_samples = _as_samples(posterior_samples, "posterior_samples")
     if prior_samples.shape[1] != posterior_samples.shape[1]:
         raise ValueError(
             f"prior has {prior_samples.shape[1]} parameters, posterior has "
@@ -574,12 +672,21 @@ def movement(prior_samples, posterior_samples, names=None, method="gaussian",
     if estimator is None:
         raise ValueError(f"unknown method {method!r}")
 
+    take_log = _log_columns(d, names, log)
+
     sd_ratio = np.empty(d)
     kl = np.empty(d)
     for k in range(d):
-        sp = prior_samples[:, k].std(ddof=1)
-        sq = posterior_samples[:, k].std(ddof=1)
+        p_col, q_col = prior_samples[:, k], posterior_samples[:, k]
+        if take_log[k]:
+            if p_col.min() <= 0 or q_col.min() <= 0:
+                raise ValueError(
+                    f"{names[k]} was asked for in log units but has "
+                    "non-positive samples"
+                )
+            p_col, q_col = np.log(p_col), np.log(q_col)
+        sp, sq = p_col.std(ddof=1), q_col.std(ddof=1)
         sd_ratio[k] = np.inf if sp == 0 else sq / sp
-        kl[k] = estimator(posterior_samples[:, k], prior_samples[:, k])
+        kl[k] = estimator(q_col, p_col)
 
     return Movement(names, sd_ratio, kl, sd_ratio > threshold, threshold)

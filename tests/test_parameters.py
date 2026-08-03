@@ -18,6 +18,7 @@ from zulf.parameters import (
     Ordering,
     canonical_order,
     canonical_sign,
+    canonical_theta,
     from_pairs,
     is_canonical,
     orbit_index,
@@ -233,12 +234,29 @@ def test_canonical_sign_agrees_with_the_forward_model_degeneracy():
     assert np.allclose(a1, a2, rtol=1e-12)
 
 
-def test_report_gauge_states_both_conventions():
+def test_report_gauge_states_all_three_conventions():
     text = report_gauge()
     assert "largest-magnitude" in text
     assert "positive" in text
     assert "relabel" in text.lower()
     assert "quotient" in text
+
+
+def test_report_gauge_describes_the_tie_rule_the_code_actually_uses():
+    """The sorted coupling vector is not a complete invariant, so the stated
+    rule has to say what happens when it ties, and say the same thing
+    `canonical_order` does."""
+    text = report_gauge()
+    assert "not a complete one" in text
+    assert "lexicographically smallest" in text
+
+
+def test_report_gauge_does_not_overclaim_what_the_prior_folds():
+    """The paper's sentence and the code have to agree.  SignGaugedPrior folds
+    the sign degeneracy only, so a blanket claim that the prior is folded onto
+    the whole quotient would be false in print."""
+    text = report_gauge()
+    assert "not folded over" in text and "labelling" in text
 
 
 # ---------------------------------------------------------- permutation gauge
@@ -304,6 +322,118 @@ def test_canonical_order_ties_break_on_the_index():
     """Three equivalent protons have identical coupling vectors, so nothing
     should move and the answer must not depend on dictionary order."""
     assert canonical_order(ACETONITRILE, NITRILE).perm == (0, 1, 2, 3, 4)
+
+
+# Two carbons and two protons whose sorted coupling vectors are equal while
+# their actual couplings are not: key(0) == key(1) == (1, 2, 10) and
+# key(2) == key(3) == (1, 2, 5).  The sorted key is a permutation invariant,
+# not a complete one, so this is the case where breaking the tie on the spin
+# index would leave two labellings of one molecule as two representatives.
+TIED = {(0, 1): 10.0, (0, 2): 1.0, (0, 3): 2.0,
+        (1, 2): 2.0, (1, 3): 1.0, (2, 3): 5.0}
+TIED_SYSTEM = SpinSystem("two carbons, two protons", ["13C", "13C", "1H", "1H"])
+
+
+def test_the_tied_case_really_is_a_degeneracy():
+    """Guard for the test below: if the spectrum could tell these apart there
+    would be nothing to fix and the canonicalization would be wrong to."""
+    swapped = relabel(TIED, {0: 1, 1: 0, 2: 2, 3: 3})
+    assert swapped != TIED
+    f1, _ = lines(TIED_SYSTEM, TIED)
+    f2, _ = lines(TIED_SYSTEM, swapped)
+    assert np.allclose(np.sort(f1), np.sort(f2), atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "perm", [{0: 1, 1: 0, 2: 2, 3: 3}, {0: 0, 1: 1, 2: 3, 3: 2},
+             {0: 1, 1: 0, 2: 3, 3: 2}],
+)
+def test_canonical_order_resolves_nuclei_that_tie_on_the_key(perm):
+    """Every labelling of the molecule has to reach one representative.  A
+    tie-break on the spin index does not manage it; minimizing the relabelled
+    coupling matrix does."""
+    target = canonical_order(TIED_SYSTEM, TIED).jpairs
+    assert canonical_order(TIED_SYSTEM, relabel(TIED, perm)).jpairs == target
+
+
+def test_canonical_order_of_a_tied_case_leaves_the_spectrum_alone():
+    swapped = relabel(TIED, {0: 1, 1: 0, 2: 2, 3: 3})
+    f1, _ = lines(TIED_SYSTEM, swapped)
+    f2, _ = lines(TIED_SYSTEM, canonical_order(TIED_SYSTEM, swapped).jpairs)
+    assert np.allclose(np.sort(f1), np.sort(f2), atol=1e-9)
+
+
+def test_canonical_order_raises_rather_than_half_fixing_the_gauge():
+    """If the undetermined labellings do not fit in the budget, a silent
+    fallback would report a gauge as fixed when it is not."""
+    with pytest.raises(ValueError, match="max_permutations"):
+        canonical_order(TIED_SYSTEM, TIED, max_permutations=1)
+
+
+def test_an_interchangeable_block_costs_no_enumeration():
+    """A methyl group ties on the key because it really is interchangeable.
+    That block must be recognised and skipped, or every call would enumerate
+    k! relabellings that all give the same matrix."""
+    assert canonical_order(ACETONITRILE, NITRILE, max_permutations=1).perm == \
+        (0, 1, 2, 3, 4)
+    assert canonical_order(METHANOL, METHYL, max_permutations=1).perm == (0, 1, 2, 3)
+
+
+# ------------------------------------------- both gauges in parameter space
+
+def test_canonical_theta_absorbs_the_orbit_exchange_of_acetonitrile():
+    """Exchanging the two carbons exchanges two components of theta.  The
+    likelihood cannot see it, so the parameterization must not keep both."""
+    theta = np.array([56.6, -10.0, 136.0, -16.9])
+    swapped = from_pairs(
+        ACETONITRILE,
+        relabel(to_pairs(ACETONITRILE, theta), {0: 1, 1: 0, 2: 2, 3: 3, 4: 4}),
+    )
+    assert not np.allclose(swapped, theta)          # it really did move
+    f1, _ = lines(ACETONITRILE, to_pairs(ACETONITRILE, theta))
+    f2, _ = lines(ACETONITRILE, to_pairs(ACETONITRILE, swapped))
+    assert np.allclose(np.sort(f1), np.sort(f2), atol=1e-9)   # same spectrum
+
+    assert np.allclose(canonical_theta(ACETONITRILE, theta),
+                       canonical_theta(ACETONITRILE, swapped))
+
+
+def test_canonical_theta_is_idempotent_and_keeps_the_sign_gauge():
+    rng = np.random.default_rng(30)
+    theta = rng.normal(0, 50, size=(50, 4))
+    once = canonical_theta(ACETONITRILE, theta)
+    assert once.shape == theta.shape
+    assert np.allclose(canonical_theta(ACETONITRILE, once), once)
+    assert np.all(is_canonical(once))
+
+
+def test_canonical_theta_does_not_change_the_spectrum():
+    rng = np.random.default_rng(31)
+    for row in rng.normal(0, 40, size=(5, 4)):
+        f1, _ = lines(ACETONITRILE, to_pairs(ACETONITRILE, row))
+        f2, _ = lines(ACETONITRILE,
+                      to_pairs(ACETONITRILE, canonical_theta(ACETONITRILE, row)))
+        assert np.allclose(np.sort(f1), np.sort(f2), atol=1e-9)
+
+
+@pytest.mark.parametrize("system, theta",
+                         [(FORMIC_ACID, [221.0]), (METHANOL, [140.6, -12.4])])
+def test_canonical_theta_reduces_to_the_sign_gauge_where_it_can(system, theta):
+    """Formic acid has no two nuclei of a species; methanol's protons are
+    declared equivalent, so the orbits already absorbed every permutation.
+    Neither has labelling freedom left, and neither should pay for it."""
+    assert np.allclose(canonical_theta(system, theta), canonical_sign(theta))
+    assert np.allclose(canonical_theta(system, np.negative(theta)),
+                       canonical_sign(theta))
+
+
+def test_only_acetonitrile_has_a_labelling_gauge_left_in_theta():
+    from zulf.parameters import _orbit_action
+    for system, expected in ((FORMIC_ACID, 0), (METHANOL, 0), (ACETONITRILE, 1)):
+        action = _orbit_action(system.n, system.equivalent, tuple(system.labels))
+        assert len(action) == expected, system.name
+    assert _orbit_action(ACETONITRILE.n, ACETONITRILE.equivalent,
+                         tuple(ACETONITRILE.labels)) == ((0, 2, 1, 3),)
 
 
 # -------------------------------------------------------------- prior pieces
@@ -507,6 +637,14 @@ def test_gauged_prior_density_is_the_sum_over_the_two_preimages():
     assert abs(gauged.log_prob(theta) - expected) < 1e-12
 
 
+def test_gauged_prior_needs_a_coupling_block_to_gauge():
+    """With an empty coupling block the flip is the identity, so the fold adds
+    a density to itself and integrates to two.  There is nothing to gauge, so
+    the object is wrong rather than the number."""
+    with pytest.raises(ValueError, match="no sign gauge"):
+        SignGaugedPrior([("x", Normal(0.0, 1.0))], 0)
+
+
 def test_gauged_prior_gives_no_density_outside_the_canonical_region():
     prior = default_prior(METHANOL, nuisance=False)
     assert prior.log_prob(np.array([-80.0, 10.0])) == -np.inf
@@ -616,6 +754,88 @@ def test_movement_takes_names_from_a_prior_object():
     m = movement(prior.sample(2000, rng), prior.sample(2000, rng), names=prior)
     assert m.names == prior.names
     assert "J(0,1)" in m.table()
+
+
+def test_knn_kl_is_scale_invariant():
+    """The estimator is a ratio of distances, so multiplying both samples by a
+    constant must not change it.  It used to, because the guard against
+    log(0) was an absolute floor."""
+    rng = np.random.default_rng(20)
+    n = 20000
+    prior_samples = LogUniform(1e-13, 1e-8).sample(n, rng).reshape(-1, 1)
+    post = np.exp(rng.normal(np.log(2e-11), 0.05, n)).reshape(-1, 1)
+    small = movement(prior_samples, post, method="knn").kl[0]
+    large = movement(prior_samples * 1e11, post * 1e11, method="knn").kl[0]
+    assert abs(small - large) < 1e-6
+
+
+def test_knn_kl_survives_a_parameter_measured_in_tesla():
+    """b_mag lives in 1e-13 to 1e-8 T and its sample spacings are near 1e-16.
+    An absolute floor clipped all of them equal and reported a 4 nat move as
+    5e-5, i.e. as an unconstrained flat direction, which is the worst possible
+    way for this diagnostic to fail.
+
+    Analytic KL for a LogUniform(1e-13, 1e-8) prior against a lognormal
+    posterior of log-width 0.05 centred on 2e-11 is 4.020 nats.  Measured over
+    15 seeds the estimator returns 3.94 to 4.15.
+    """
+    rng = np.random.default_rng(21)
+    n = 20000
+    prior_samples = LogUniform(1e-13, 1e-8).sample(n, rng).reshape(-1, 1)
+    post = np.exp(rng.normal(np.log(2e-11), 0.05, n)).reshape(-1, 1)
+    assert abs(movement(prior_samples, post, method="knn").kl[0] - 4.020) < 0.2
+
+
+def test_the_log_basis_rescues_the_moment_matched_kl():
+    """The moment-matched KL of a five-decade log-uniform prior is meaningless
+    in linear units: measured 7.13 against an analytic 4.020.  In the basis
+    the prior is flat in it is 3.70, still approximate because a uniform is
+    not a Gaussian, but no longer wrong by three nats."""
+    rng = np.random.default_rng(22)
+    n = 20000
+    prior_samples = LogUniform(1e-13, 1e-8).sample(n, rng).reshape(-1, 1)
+    post = np.exp(rng.normal(np.log(2e-11), 0.05, n)).reshape(-1, 1)
+    linear = movement(prior_samples, post, names=["b_mag"]).kl[0]
+    logged = movement(prior_samples, post, names=["b_mag"], log=["b_mag"]).kl[0]
+    assert abs(linear - 4.020) > 2.5
+    assert abs(logged - 4.020) < 0.5
+
+
+def test_log_scale_names_lists_the_log_uniform_nuisances():
+    prior = default_prior(METHANOL, predicted={(0, 1): 140.3}, width=1.0, n_rates=2)
+    names = prior.log_scale_names()
+    assert set(names) == {"b_mag", "rate0", "rate1", "noise", "scale", "f_cut", "gain"}
+    assert "J(0,1)" not in names        # a coupling is linear
+    assert "b_theta" not in names       # an angle is not a scale
+    assert "prep_angle" not in names and "t_dead" not in names
+
+
+def test_movement_log_accepts_indices_and_rejects_nonsense():
+    rng = np.random.default_rng(23)
+    prior_samples = np.exp(rng.normal(0, 1, (500, 1)))
+    post = np.exp(rng.normal(0, 0.2, (500, 1)))
+    assert np.isfinite(movement(prior_samples, post, log=[0]).kl[0])
+    with pytest.raises(ValueError, match="no parameter named"):
+        movement(prior_samples, post, names=["x"], log=["y"])
+    with pytest.raises(ValueError, match="non-positive"):
+        movement(prior_samples, -post, names=["x"], log=["x"])
+    with pytest.raises(ValueError, match="sequence"):
+        movement(prior_samples, post, names=["x"], log="x")
+
+
+def test_movement_pools_leading_dimensions():
+    """MCMC output arrives as (chains, draws, d) and should read as it looks."""
+    rng = np.random.default_rng(24)
+    prior_samples = rng.normal(0, 1, (4, 500, 2))
+    post = rng.normal(0, 0.1, (4, 500, 2))
+    m = movement(prior_samples, post)
+    assert m.sd_ratio.shape == (2,)
+    assert np.all(m.sd_ratio < 0.2)
+
+
+def test_movement_rejects_a_scalar():
+    with pytest.raises(ValueError, match="not a scalar"):
+        movement(1.0, 2.0)
 
 
 def test_movement_reads_a_bare_1d_array_as_one_parameter():
